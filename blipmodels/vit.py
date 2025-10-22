@@ -14,15 +14,40 @@ import torch.nn.functional as F
 from functools import partial
 
 from timm.models.vision_transformer import _cfg, PatchEmbed
-from timm.models.registry import register_model
 from timm.models.layers import trunc_normal_, DropPath
-from timm.models.helpers import named_apply, adapt_input_conv
+
+try:
+    from timm.models.helpers import named_apply, adapt_input_conv
+except Exception:
+    try:
+        from timm.models._helpers import named_apply, adapt_input_conv
+    except Exception:
+        from timm.layers import adapt_input_conv
+        import torch.nn as nn
+
+
+        def named_apply(fn, module: nn.Module, name: str = "", depth_first: bool = True, include_root: bool = False):
+            if not depth_first and include_root:
+                fn(module=module, name=name)
+            for child_name, child_module in module.named_children():
+                child_name = f"{name}.{child_name}" if name else child_name
+                named_apply(fn=fn, module=child_module, name=child_name, depth_first=depth_first, include_root=True)
+            if depth_first and include_root:
+                fn(module=module, name=name)
+            return module
+
+try:
+    from timm.models.registry import register_model
+except Exception:
+    from timm.models import register_model
 
 from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
+
 
 class Mlp(nn.Module):
     """ MLP as used in Vision Transformer, MLP-Mixer and related networks
     """
+
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
         super().__init__()
         out_features = out_features or in_features
@@ -54,31 +79,31 @@ class Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
         self.attn_gradients = None
         self.attention_map = None
-        
+
     def save_attn_gradients(self, attn_gradients):
         self.attn_gradients = attn_gradients
-        
+
     def get_attn_gradients(self):
         return self.attn_gradients
-    
+
     def save_attention_map(self, attention_map):
         self.attention_map = attention_map
-        
+
     def get_attention_map(self):
         return self.attention_map
-    
+
     def forward(self, x, register_hook=False):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
+        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
-                
+
         if register_hook:
             self.save_attention_map(attn)
-            attn.register_hook(self.save_attn_gradients)        
+            attn.register_hook(self.save_attn_gradients)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
@@ -109,15 +134,16 @@ class Block(nn.Module):
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
 
-    
+
 class VisionTransformer(nn.Module):
     """ Vision Transformer
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`  -
         https://arxiv.org/abs/2010.11929
     """
+
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=True, qk_scale=None, representation_size=None,
-                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0., norm_layer=None, 
+                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0., norm_layer=None,
                  use_grad_checkpointing=False, ckpt_layer=0):
         """
         Args:
@@ -155,7 +181,7 @@ class VisionTransformer(nn.Module):
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer,
-                use_grad_checkpointing=(use_grad_checkpointing and i>=depth-ckpt_layer)
+                use_grad_checkpointing=(use_grad_checkpointing and i >= depth - ckpt_layer)
             )
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
@@ -183,20 +209,20 @@ class VisionTransformer(nn.Module):
 
         cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
-  
-        x = x + self.pos_embed[:,:x.size(1),:]
+
+        x = x + self.pos_embed[:, :x.size(1), :]
         x = self.pos_drop(x)
 
-        for i,blk in enumerate(self.blocks):
-            x = blk(x, register_blk==i)
+        for i, blk in enumerate(self.blocks):
+            x = blk(x, register_blk == i)
         x = self.norm(x)
-        
+
         return x
 
     @torch.jit.ignore()
     def load_pretrained(self, checkpoint_path, prefix=''):
         _load_weights(self, checkpoint_path, prefix)
-        
+
 
 @torch.no_grad()
 def _load_weights(model: VisionTransformer, checkpoint_path: str, prefix: str = ''):
@@ -254,12 +280,12 @@ def _load_weights(model: VisionTransformer, checkpoint_path: str, prefix: str = 
     model.pos_embed.copy_(pos_embed_w)
     model.norm.weight.copy_(_n2p(w[f'{prefix}Transformer/encoder_norm/scale']))
     model.norm.bias.copy_(_n2p(w[f'{prefix}Transformer/encoder_norm/bias']))
-#     if isinstance(model.head, nn.Linear) and model.head.bias.shape[0] == w[f'{prefix}head/bias'].shape[-1]:
-#         model.head.weight.copy_(_n2p(w[f'{prefix}head/kernel']))
-#         model.head.bias.copy_(_n2p(w[f'{prefix}head/bias']))
-#     if isinstance(getattr(model.pre_logits, 'fc', None), nn.Linear) and f'{prefix}pre_logits/bias' in w:
-#         model.pre_logits.fc.weight.copy_(_n2p(w[f'{prefix}pre_logits/kernel']))
-#         model.pre_logits.fc.bias.copy_(_n2p(w[f'{prefix}pre_logits/bias']))
+    #     if isinstance(model.head, nn.Linear) and model.head.bias.shape[0] == w[f'{prefix}head/bias'].shape[-1]:
+    #         model.head.weight.copy_(_n2p(w[f'{prefix}head/kernel']))
+    #         model.head.bias.copy_(_n2p(w[f'{prefix}head/bias']))
+    #     if isinstance(getattr(model.pre_logits, 'fc', None), nn.Linear) and f'{prefix}pre_logits/bias' in w:
+    #         model.pre_logits.fc.weight.copy_(_n2p(w[f'{prefix}pre_logits/kernel']))
+    #         model.pre_logits.fc.bias.copy_(_n2p(w[f'{prefix}pre_logits/bias']))
     for i, block in enumerate(model.blocks.children()):
         block_prefix = f'{prefix}Transformer/encoderblock_{i}/'
         mha_prefix = block_prefix + 'MultiHeadDotProductAttention_1/'
@@ -277,8 +303,8 @@ def _load_weights(model: VisionTransformer, checkpoint_path: str, prefix: str = 
         block.norm2.weight.copy_(_n2p(w[f'{block_prefix}LayerNorm_2/scale']))
         block.norm2.bias.copy_(_n2p(w[f'{block_prefix}LayerNorm_2/bias']))
 
-            
-def interpolate_pos_embed(pos_embed_checkpoint, visual_encoder):        
+
+def interpolate_pos_embed(pos_embed_checkpoint, visual_encoder):
     # interpolate position embedding
     embedding_size = pos_embed_checkpoint.shape[-1]
     num_patches = visual_encoder.patch_embed.num_patches
@@ -288,7 +314,7 @@ def interpolate_pos_embed(pos_embed_checkpoint, visual_encoder):
     # height (== width) for the new position embedding
     new_size = int(num_patches ** 0.5)
 
-    if orig_size!=new_size:
+    if orig_size != new_size:
         # class_token and dist_token are kept unchanged
         extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]
         # only the position tokens are interpolated
@@ -298,8 +324,8 @@ def interpolate_pos_embed(pos_embed_checkpoint, visual_encoder):
             pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
         pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
         new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
-        print('reshape position embedding from %d to %d'%(orig_size ** 2,new_size ** 2))
-        
-        return new_pos_embed    
+        print('reshape position embedding from %d to %d' % (orig_size ** 2, new_size ** 2))
+
+        return new_pos_embed
     else:
         return pos_embed_checkpoint

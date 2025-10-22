@@ -3,7 +3,10 @@ from models.nlvr_encoder import BertModel
 from models.vit import interpolate_pos_embed
 from models.blip import create_vit, init_tokenizer, is_url
 
-from timm.models.hub import download_cached_file
+try:
+    from timm.models.hub import download_cached_file
+except Exception:
+    from timm.models._hub import download_cached_file
 
 import torch
 from torch import nn

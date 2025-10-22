@@ -18,7 +18,10 @@ import torch.nn.functional as F
 
 import os
 from urllib.parse import urlparse
-from timm.models.hub import download_cached_file
+try:
+    from timm.models.hub import download_cached_file
+except Exception:
+    from timm.models._hub import download_cached_file
 
 class BLIP_Base(nn.Module):
     def __init__(self,                 
