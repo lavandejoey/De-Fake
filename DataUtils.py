@@ -20,12 +20,13 @@ import cv2
 import numpy as np
 import os
 import pandas as pd
+import torch
 from PIL import Image, ImageFile
 from dataclasses import dataclass, asdict
 from enum import Enum
+from io import BytesIO
 from pathlib import Path
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
-import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from typing import Mapping, Sequence, Tuple
