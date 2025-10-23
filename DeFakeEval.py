@@ -155,6 +155,7 @@ def get_args():
     p = argparse.ArgumentParser(description="DeFakeEval: batched, multi-GPU evaluation with streaming CSV writes")
     p.add_argument("--data_root", type=str, required=True, help="Root folder of frames/videos")
     p.add_argument("--data_csv", type=str, default=None, help="Optional prebuilt CSV index for the dataset")
+    p.add_argument("--done_csv_list", type=str, nargs='*', default=[], help="List of done CSVs to skip samples")
     p.add_argument("--results", type=str, required=True, help="Directory to write results CSV into")
     p.add_argument("--mode", type=str, default="frame", choices=["frame", "video"], help="Dataset mode")
     p.add_argument("--batch_size", type=int, default=256, help="Batch size (default: 32 as requested)")
@@ -283,6 +284,7 @@ def main():
         clip_transform=clip_preprocess,  # CLIP-normalised tensors
         blip_transform=blip_transform,  # BLIP tensors
         on_corrupt="warn",
+        done_csv_list=args.done_csv_list,
     )
     loader = DataLoader(
         dataset,
